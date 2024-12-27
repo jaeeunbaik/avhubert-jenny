@@ -39,11 +39,12 @@ logger = logging.getLogger(__name__)
 def load_audio_visual(manifest_path, max_keep, min_keep, frame_rate, label_paths, label_rates, tol=0.1):
     def is_audio_label_aligned(audio_dur, label_durs):
         return all([abs(audio_dur - label_dur)<tol for label_dur in label_durs])
-
     n_long, n_short, n_unaligned = 0, 0, 0
     names, inds, sizes = [], [], []
     dur_from_label_list = []
     is_seq_label = any([x==-1 for x in label_rates])
+    # print(label_paths) # valid.km
+    # print(manifest_path) # valid.tsv
     for label_path, label_rate in zip(label_paths, label_rates):
         label_lengths = [len(line.rstrip().split())/label_rate for line in open(label_path).readlines()]
         dur_from_label_list.append(label_lengths)
@@ -68,6 +69,9 @@ def load_audio_visual(manifest_path, max_keep, min_keep, frame_rate, label_paths
                 inds.append(ind)
                 sizes.append(sz)
     tot = ind + 1
+    
+    
+    
     logger.info(
         (
             f"max_keep={max_keep}, min_keep={min_keep}, "

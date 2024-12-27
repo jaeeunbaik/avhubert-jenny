@@ -65,7 +65,7 @@ class AVHubertPretrainingConfig(FairseqDataclass):
         default=MISSING, metadata={"help": "path to data directory"}
     )
     labels: List[str] = field(
-        default_factory=lambda: ["ltr"],
+        default_factory=lambda: ["ltr50", "ltr25"],
         metadata={
             "help": (
                 "extension of the label files to load, frame-level labels for"
@@ -79,11 +79,11 @@ class AVHubertPretrainingConfig(FairseqDataclass):
             "help": "if set, looks for labels in this directory instead",
         },
     )
-    label_rate: int = field(
-        default=-1,
-        metadata={"help": "label frame rate. -1 for sequence label"},
+    label_rate: float = field(
+        default=-1.0,
+        metadata={"help": "label frame rate. -1.0 for sequence label"},
     )
-
+    label_rate_ratios: List[int] = field(default=MISSING, metadata={"help": "tuple for label rates e.g., [(1,2), (2,5)]"})  
     sample_rate: int = field(
         default=16_000,
         metadata={
@@ -100,6 +100,10 @@ class AVHubertPretrainingConfig(FairseqDataclass):
     enable_padding: bool = field(
         default=False,
         metadata={"help": "pad shorter samples instead of cropping"},
+    )
+    max_keep_size: Optional[int] = field(
+        default=None,
+        metadata={"help": "exclude sample longer than this"},
     )
     max_sample_size: Optional[int] = field(
         default=None,
@@ -176,6 +180,7 @@ class AVHubertPretrainingTask(FairseqTask):
             self.state.add_factory("target_dictionary", self.load_dictionaries)
             if cfg.is_s2s:
                 self.state.add_factory("s2s_tokenizer", self.load_tokenizer)
+            self.res_number = 1
         else:
             self.state.add_factory("dictionaries", self.load_dictionaries)
 
@@ -241,6 +246,19 @@ class AVHubertPretrainingTask(FairseqTask):
         image_aug = self.cfg.image_aug if split == 'train' else False
         noise_fn, noise_snr = f"{self.cfg.noise_wav}/{split}.tsv" if self.cfg.noise_wav is not None else None, eval(self.cfg.noise_snr)
         noise_num = self.cfg.noise_num # 
+        
+        base_rate = self.cfg.label_rate
+        self.label_rates = [base_rate]
+        label_rate_ratios = self.cfg.label_rate_ratios
+        self.label_rate_ratios = []
+        for i in range(len(label_rate_ratios) // 2):
+
+            upsample_rate, downsample_rate = label_rate_ratios[i * 2], label_rate_ratios[i * 2 + 1]
+            # parse label rate ratios
+            self.label_rate_ratios.append((upsample_rate, downsample_rate))
+            base_rate = base_rate * upsample_rate // downsample_rate
+            self.label_rates.append(base_rate)
+            
         self.datasets[split] = AVHubertDataset(
             manifest,
             sample_rate=self.cfg.sample_rate,
