@@ -43,8 +43,6 @@ def load_audio_visual(manifest_path, max_keep, min_keep, frame_rate, label_paths
     names, inds, sizes = [], [], []
     dur_from_label_list = []
     is_seq_label = any([x==-1 for x in label_rates])
-    # print(label_paths) # valid.km
-    # print(manifest_path) # valid.tsv
     for label_path, label_rate in zip(label_paths, label_rates):
         label_lengths = [len(line.rstrip().split())/label_rate for line in open(label_path).readlines()]
         dur_from_label_list.append(label_lengths)
@@ -92,6 +90,7 @@ def load_label(label_path, inds, tot):
 
 
 def load_label_offset(label_path, inds, tot):
+    print(label_path)
     with open(label_path) as f:
         code_lengths = [len(line.encode("utf-8")) for line in f]
         assert (
@@ -176,7 +175,7 @@ class AVHubertDataset(FairseqDataset):
         self.label_rates = (
             [label_rates for _ in range(len(label_paths))]
             if isinstance(label_rates, int)
-            else label_rates
+            else [int(label_rates)]
         )
         self.modalities = set(modalities)
         self.audio_root, self.names, inds, tot, self.sizes = load_audio_visual(manifest_path, max_keep_sample_size, min_keep_sample_size, frame_rate=sample_rate, label_paths=label_paths, label_rates=self.label_rates)

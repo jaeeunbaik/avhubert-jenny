@@ -9,6 +9,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import math
 
 import torch
 import torch.nn as nn
@@ -18,6 +19,7 @@ from fairseq.data.data_utils import compute_mask_indices
 from fairseq.data.dictionary import Dictionary
 from fairseq.dataclass import ChoiceEnum, FairseqDataclass
 from fairseq.models import BaseFairseqModel, register_model
+from fairseq.models.wav2vec.wav2vec import norm_block
 from fairseq.models.wav2vec.wav2vec2 import (
     EXTRACTOR_MODE_CHOICES,
     MASKING_DISTRIBUTION_CHOICES,
@@ -65,7 +67,7 @@ MASKING_DISTRIBUTION_CHOICES = ChoiceEnum(
 
 @dataclass
 class AVHubertConfig(FairseqDataclass):
-    label_rate: int = II("task.label_rate")
+    label_rate: float = II("task.label_rate")
     input_modality: str = II("task.input_modality")
     label_rate_ratios: List[int] = field(
         default=MISSING, metadata={"help": "tuple for label rates e.g., [(1,2), (2,5)]"}
@@ -412,10 +414,12 @@ class AVHubertModel(BaseFairseqModel):
         logger.info(f"HubertModel Config: {cfg}")
 
         feature_ds_rate = 1
-        self.feat2tar_ratio = cfg.label_rate * feature_ds_rate / task_cfg.sample_rate
+        # self.feat2tar_ratio = cfg.label_rate * feature_ds_rate / task_cfg.sample_rate
         sub_cfg = deepcopy(cfg)
         sub_cfg.encoder_layers = sub_cfg.sub_encoder_layers
         resnet = ResEncoder(relu_type=cfg.resnet_relu_type, weights=cfg.resnet_weights)
+        feature_enc_layers = eval(cfg.conv_feature_layers)  # noqa
+        self.embed = feature_enc_layers[-1][0]
         self.feature_extractor_audio = SubModel(resnet=None, input_dim=cfg.audio_feat_dim, cfg=sub_cfg)
         self.feature_extractor_video = SubModel(resnet=resnet, input_dim=resnet.backend_out, cfg=sub_cfg)
         self.modality_dropout, self.audio_dropout = cfg.modality_dropout, cfg.audio_dropout
@@ -445,7 +449,6 @@ class AVHubertModel(BaseFairseqModel):
         self.use_single_target = cfg.use_single_target
         self.use_single_prediction = cfg.use_single_prediction
         self.use_plain_updownsample = cfg.use_plain_updownsample
-
         # For decide the override encoder layers, so that the layer number is not equally distributed
         if cfg.override_encoder_layers != "":
             self.override_encoder_layers = eval(cfg.override_encoder_layers)
@@ -592,12 +595,10 @@ class AVHubertModel(BaseFairseqModel):
         base_ds_rate = np.prod([s for _, _, s in feature_enc_layers])
         self.feature_ds_rates = [base_ds_rate]
         running_rate = self.base_rate
-
         if cfg.use_single_target or cfg.use_multi_stream:
             self.label_rates = self.base_rate
         else:
             self.label_rates.append(self.base_rate)
-
         for label_rate_ratio in self.label_rate_ratios:
             upsample_rate, downsample_rate = label_rate_ratio
             if (base_ds_rate * upsample_rate) % downsample_rate != 0:
@@ -616,7 +617,6 @@ class AVHubertModel(BaseFairseqModel):
         self.label_nums = len(
             self.feature_ds_rates
         )  # the number of labels for prediction (activate at iter 2)
-
         if type(self.label_rates) == float:
             self.feat2tar_ratios = [
                 self.feature_ds_rates[i] * self.label_rates / task_cfg.sample_rate
@@ -634,7 +634,6 @@ class AVHubertModel(BaseFairseqModel):
                 self.feature_ds_rates, self.label_rates, self.feat2tar_ratios
             )
         )
-
         self.mask_prob_image, self.mask_prob_audio = cfg.mask_prob_image, cfg.mask_prob_audio
         self.mask_selection = cfg.mask_selection
         self.mask_other = cfg.mask_other
@@ -677,8 +676,12 @@ class AVHubertModel(BaseFairseqModel):
             self.target_glu = nn.Sequential(
                 nn.Linear(final_dim, final_dim * 2), nn.GLU()
             )
-
         self.untie_final_proj = cfg.untie_final_proj
+        self.final_projs = nn.ModuleList()
+
+        # Note(jiatong): we do not have untie cases for multires hubert
+        for i in range(self.predictor_head_num):
+            self.final_projs.append(nn.Linear(cfg.encoder_embed_dim, final_dim))
         # if self.untie_final_proj:
         #     self.final_proj = nn.Linear(
         #         cfg.encoder_embed_dim, final_dim * len(dictionaries)
@@ -691,7 +694,6 @@ class AVHubertModel(BaseFairseqModel):
         # modules below are not needed during fine-tuning
         self.multires_classes = []
         self.label_embs_concat = nn.ParameterList()
-        
         for i in range(self.predictor_head_num):
             if self.use_single_target:
                 num_classes = len(dictionaries[0])
